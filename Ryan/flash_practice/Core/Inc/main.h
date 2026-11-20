@@ -65,6 +65,22 @@ void Error_Handler(void);
 #define TFT_DC_GPIO_Port GPIOB
 #define TFT_CS_Pin GPIO_PIN_7
 #define TFT_CS_GPIO_Port GPIOE
+#define keypad_Pin GPIO_PIN_15
+#define keypad_GPIO_Port GPIOB
+#define keypadD9_Pin GPIO_PIN_9
+#define keypadD9_GPIO_Port GPIOD
+#define keypadD11_Pin GPIO_PIN_11
+#define keypadD11_GPIO_Port GPIOD
+#define keypadD13_Pin GPIO_PIN_13
+#define keypadD13_GPIO_Port GPIOD
+#define keypadD15_Pin GPIO_PIN_15
+#define keypadD15_GPIO_Port GPIOD
+#define keypadC7_Pin GPIO_PIN_7
+#define keypadC7_GPIO_Port GPIOC
+#define keypadC9_Pin GPIO_PIN_9
+#define keypadC9_GPIO_Port GPIOC
+#define keypadA9_Pin GPIO_PIN_9
+#define keypadA9_GPIO_Port GPIOA
 
 /* USER CODE BEGIN Private defines */
 

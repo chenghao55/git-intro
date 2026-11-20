@@ -26,12 +26,30 @@
 
 /* Private typedef -----------------------------------------------------------*/
 /* USER CODE BEGIN PTD */
-#define SPI1_CLK_GPIO_Port GPIOA
-#define SPI1_CLK_Pin GPIO_PIN_5
+/*
+ * has_ 欄位表示資料是否有效：
+ * 0：尚未取得資料，顯示 N/A，
+ * 1：已取得資料，顯示實際數值
+ */
+typedef struct
+{
+    uint8_t id[3];
+    uint8_t status;
+    uint32_t address;
+    uint8_t data[4];
 
+    uint8_t has_id;
+    uint8_t has_status;
+    uint8_t has_address;
+    uint8_t has_data;
+
+} FlashInfo;
+/* USER CODE END PTD */
+
+/* Private define ------------------------------------------------------------*/
+/* USER CODE BEGIN PD */
 #define FLASH_CS_GPIO_Port GPIOA
 #define FLASH_CS_Pin GPIO_PIN_4
-
 #define TFT_CS_GPIO_Port GPIOE
 #define TFT_CS_Pin GPIO_PIN_7
 #define TFT_RST_GPIO_Port GPIOB
@@ -39,17 +57,35 @@
 #define TFT_DC_GPIO_Port GPIOB
 #define TFT_DC_Pin GPIO_PIN_1
 
-
-// TFT display setting
 #define TFT_BLACK  0x0000
 #define TFT_WHITE  0xFFFF
 #define TFT_CYAN   0x07FF
 #define TFT_GREEN  0x07E0
 #define TFT_YELLOW 0xFFE0
 #define TFT_GRAY   0x8410
+
+#define KEY_ROW_COUNT 4
+#define KEY_COL_COUNT 3
+#define KEY_DEBOUNCE_MS 30
+/* USER CODE END PD */
+
+/* Private macro -------------------------------------------------------------*/
+/* USER CODE BEGIN PM */
+#define SEL_TFT()   HAL_GPIO_WritePin(TFT_CS_GPIO_Port, TFT_CS_Pin, GPIO_PIN_RESET)
+#define UNSEL_TFT()   HAL_GPIO_WritePin(TFT_CS_GPIO_Port, TFT_CS_Pin, GPIO_PIN_SET)
+
+
+#define SEL_FLASH()   HAL_GPIO_WritePin(FLASH_CS_GPIO_Port, FLASH_CS_Pin, GPIO_PIN_RESET)
+#define UNSEL_FLASH()   HAL_GPIO_WritePin(FLASH_CS_GPIO_Port, FLASH_CS_Pin, GPIO_PIN_SET)
+/* USER CODE END PM */
+
+/* Private variables ---------------------------------------------------------*/
+SPI_HandleTypeDef hspi1;
+
+/* USER CODE BEGIN PV */
 // 5x7 字型，索引依照下面 chars 的順序
 static const char chars[] =
-    " ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789:/.-";
+    " ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789:/.-#";
 
 static const uint8_t font[][5] = {
     {0,0,0,0,0},          // space
@@ -94,50 +130,22 @@ static const uint8_t font[][5] = {
     {0x00,0x36,0x36,0x00,0x00}, // :
     {0x20,0x10,0x08,0x04,0x02}, // /
     {0x00,0x60,0x60,0x00,0x00}, // .
-    {0x08,0x08,0x08,0x08,0x08}  // -
+    {0x08,0x08,0x08,0x08,0x08}, // -
+    {0x14,0x7F,0x14,0x7F,0x14}  // #
 };
 
-
-/*
- * has_ 欄位表示資料是否有效：
- * 0：尚未取得資料，顯示 N/A，
- * 1：已取得資料，顯示實際數值
- */
-typedef struct
-{
-    uint8_t id[3];
-    uint8_t status;
-    uint32_t address;
-    uint8_t data[4];
-
-    uint8_t has_id;
-    uint8_t has_status;
-    uint8_t has_address;
-    uint8_t has_data;
-
-} FlashInfo;
-
-/* USER CODE END PTD */
-
-/* Private define ------------------------------------------------------------*/
-/* USER CODE BEGIN PD */
-
-/* USER CODE END PD */
-
-/* Private macro -------------------------------------------------------------*/
-/* USER CODE BEGIN PM */
-#define SEL_TFT()   HAL_GPIO_WritePin(TFT_CS_GPIO_Port, TFT_CS_Pin, GPIO_PIN_RESET);
-#define UNSEL_TFT()   HAL_GPIO_WritePin(TFT_CS_GPIO_Port, TFT_CS_Pin, GPIO_PIN_SET);
-
-
-#define SEL_FLASH()   HAL_GPIO_WritePin(FLASH_CS_GPIO_Port, FLASH_CS_Pin, GPIO_PIN_RESET);
-#define UNSEL_FLASH()   HAL_GPIO_WritePin(FLASH_CS_GPIO_Port, FLASH_CS_Pin, GPIO_PIN_SET);
-/* USER CODE END PM */
-
-/* Private variables ---------------------------------------------------------*/
-SPI_HandleTypeDef hspi1;
-
-/* USER CODE BEGIN PV */
+// P1 (PA9) is unused; the measured row-column contacts suffice.
+// 0-based keypad pins: P5/P4/P3/P2 = rows; P8/P7/P6 = columns.
+static GPIO_TypeDef *const keypadRowPorts[KEY_ROW_COUNT] = {GPIOD, GPIOD, GPIOC, GPIOC};
+static const uint16_t keypadRowPins[KEY_ROW_COUNT] = {GPIO_PIN_13, GPIO_PIN_15, GPIO_PIN_7, GPIO_PIN_9};
+static GPIO_TypeDef *const keypadColPorts[KEY_COL_COUNT] = {GPIOB, GPIOD, GPIOD};
+static const uint16_t keypadColPins[KEY_COL_COUNT] = {GPIO_PIN_15, GPIO_PIN_9, GPIO_PIN_11};
+static const char keypadMap[KEY_ROW_COUNT][KEY_COL_COUNT] = {
+    {'1', '2', '3'},
+    {'4', '5', '6'},
+    {'7', '8', '9'},
+    {'R', '0', '#'} // R = REDIAL, since the font does not include '*'
+};
 
 /* USER CODE END PV */
 
@@ -145,27 +153,109 @@ SPI_HandleTypeDef hspi1;
 void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
 static void MX_SPI1_Init(void);
-/* USER CODE BEGIN PFP */
 
+/* USER CODE BEGIN PFP */
+static void TFT_Command(uint8_t cmd);
+static void TFT_Data(uint8_t data);
+static void TFT_Init(void);
+static void TFT_SetAddressWindow(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1);
+static void TFT_FillColor(uint16_t color);
+static void TFT_DrawChar(uint16_t x, uint16_t y, char c, uint16_t color, uint16_t bg);
+static void TFT_DrawString(uint16_t x, uint16_t y, const char *str, uint16_t color, uint16_t bg);
+static void TFT_ShowFlashInfo(const FlashInfo *info);
+static void TFT_ShowKeypad(char key);
+static void Keypad_Init(void);
+static char Keypad_Read(void);
+static char Keypad_ReadDebounced(void);
+static HAL_StatusTypeDef readFlashStatus(FlashInfo *flash);
+static HAL_StatusTypeDef readMemory(FlashInfo *flash, uint32_t address);
+static HAL_StatusTypeDef waitFlashReady(FlashInfo *flash, uint32_t timeout);
+static HAL_StatusTypeDef writeMemory(FlashInfo *flash, uint32_t address, uint8_t data);
+static void Flash_RunDemo(void);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
-void TFT_Command(uint8_t cmd) {
+static void Keypad_SetRowInput(uint8_t row)
+{
+    GPIO_InitTypeDef cfg = {0};
+    cfg.Pin = keypadRowPins[row];
+    cfg.Mode = GPIO_MODE_INPUT;
+    cfg.Pull = GPIO_PULLUP;
+    HAL_GPIO_Init(keypadRowPorts[row], &cfg);
+}
+
+static void Keypad_Init(void)
+{
+    for (uint8_t r = 0; r < KEY_ROW_COUNT; r++)
+        Keypad_SetRowInput(r);
+
+    GPIO_InitTypeDef cfg = {0};
+    cfg.Mode = GPIO_MODE_INPUT;
+    cfg.Pull = GPIO_PULLUP;
+    for (uint8_t c = 0; c < KEY_COL_COUNT; c++) {
+        cfg.Pin = keypadColPins[c];
+        HAL_GPIO_Init(keypadColPorts[c], &cfg);
+    }
+}
+
+static char Keypad_Read(void)
+{
+    for (uint8_t r = 0; r < KEY_ROW_COUNT; r++) {
+        Keypad_Init();
+        HAL_GPIO_WritePin(keypadRowPorts[r], keypadRowPins[r], GPIO_PIN_RESET);
+        GPIO_InitTypeDef cfg = {0};
+        cfg.Pin = keypadRowPins[r];
+        cfg.Mode = GPIO_MODE_OUTPUT_OD;
+        cfg.Pull = GPIO_NOPULL;
+        cfg.Speed = GPIO_SPEED_FREQ_LOW;
+        HAL_GPIO_Init(keypadRowPorts[r], &cfg);
+        HAL_Delay(1);
+
+        for (uint8_t c = 0; c < KEY_COL_COUNT; c++) {
+            if (HAL_GPIO_ReadPin(keypadColPorts[c], keypadColPins[c]) == GPIO_PIN_RESET) {
+                Keypad_Init();
+                return keypadMap[r][c];
+            }
+        }
+    }
+    Keypad_Init();
+    return '\0';
+}
+
+// Non-blocking debouncer: returns the stable current key, or NUL if released.
+static char Keypad_ReadDebounced(void)
+{
+    static char candidate = '\0';
+    static char stable = '\0';
+    static uint32_t changedAt = 0;
+    char raw = Keypad_Read();
+    uint32_t now = HAL_GetTick();
+
+    if (raw != candidate) {
+        candidate = raw;
+        changedAt = now;
+    }
+    if ((uint32_t)(now - changedAt) >= KEY_DEBOUNCE_MS)
+        stable = candidate;
+    return stable;
+}
+
+static void TFT_Command(uint8_t cmd) {
 	SEL_TFT();
 	HAL_GPIO_WritePin(TFT_DC_GPIO_Port, TFT_DC_Pin, GPIO_PIN_RESET);
 	HAL_SPI_Transmit(&hspi1, &cmd, 1, 1000);
 	UNSEL_TFT();
 }
 
-void TFT_Data(uint8_t data) {
+static void TFT_Data(uint8_t data) {
 	SEL_TFT();
 	HAL_GPIO_WritePin(TFT_DC_GPIO_Port, TFT_DC_Pin, GPIO_PIN_SET);
 	HAL_SPI_Transmit(&hspi1, &data, 1, 1000);
 	UNSEL_TFT();
 }
 
-void TFT_Init(void) {
+static void TFT_Init(void) {
 	HAL_GPIO_WritePin(TFT_RST_GPIO_Port, TFT_RST_Pin, GPIO_PIN_RESET);
 	HAL_Delay(20);
 	HAL_GPIO_WritePin(TFT_RST_GPIO_Port, TFT_RST_Pin, GPIO_PIN_SET);
@@ -195,17 +285,9 @@ void TFT_Init(void) {
 	HAL_Delay(100);
 }
 
-void TFT_DrawPixel(uint16_t x, uint16_t y, uint16_t color);
-void TFT_DrawChar(uint16_t x, uint16_t y, char c,
-                  uint16_t color, uint16_t bg);
-void TFT_DrawString(uint16_t x, uint16_t y, const char *str,
-                    uint16_t color, uint16_t bg);
-void TFT_SetAddressWindow(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1);
-void TFT_FillColor(uint16_t color);
-void TFT_ShowFlashInfo(const FlashInfo *info);
 
 /* read status register*/
-HAL_StatusTypeDef readFlashStatus(FlashInfo* flash){
+static HAL_StatusTypeDef readFlashStatus(FlashInfo* flash){
 	if (flash == NULL)
 	    return HAL_ERROR;
 
@@ -226,7 +308,7 @@ HAL_StatusTypeDef readFlashStatus(FlashInfo* flash){
 }
 
 
-HAL_StatusTypeDef readMemory(FlashInfo* flash, uint32_t address){
+static HAL_StatusTypeDef readMemory(FlashInfo* flash, uint32_t address){
 	if (flash == NULL || address > 0xFFFFFC)
 	    return HAL_ERROR;
 	flash->has_data = 0;
@@ -254,7 +336,7 @@ HAL_StatusTypeDef readMemory(FlashInfo* flash, uint32_t address){
 }
 
 
-HAL_StatusTypeDef waitFlashReady(FlashInfo *flash, uint32_t timeout)
+static HAL_StatusTypeDef waitFlashReady(FlashInfo *flash, uint32_t timeout)
 {
     uint32_t start = HAL_GetTick();
 
@@ -273,7 +355,7 @@ HAL_StatusTypeDef waitFlashReady(FlashInfo *flash, uint32_t timeout)
     }
 }
 
-HAL_StatusTypeDef writeMemory(FlashInfo* flash, uint32_t address, uint8_t data){
+static HAL_StatusTypeDef writeMemory(FlashInfo* flash, uint32_t address, uint8_t data){
 	if (flash == NULL || address > 0xFFFFFC)
 	    return HAL_ERROR;
 
@@ -355,6 +437,11 @@ int main(void)
   /* USER CODE BEGIN 2 */
   TFT_Init();
 
+  Keypad_Init();
+  TFT_FillColor(TFT_BLACK);
+  TFT_ShowKeypad('\0');
+  // Flash_RunDemo(); // Optional: enable flash read/write demo instead of keypad UI.
+
   FlashInfo flash = {0};
 
   // read ID
@@ -370,14 +457,17 @@ int main(void)
 
 
   // read memory
-  readMemory(&flash, 0x123456);
+  readMemory(&flash, 0x123410);
   TFT_ShowFlashInfo(&flash);
+  HAL_Delay(5000);
 
   // write and read
-  writeMemory(&flash, 0x123456, 0xAB);
-  readMemory(&flash, 0x123456);
+  writeMemory(&flash, 0x123410, 0xAB);
+  readMemory(&flash, 0x123410);
   TFT_ShowFlashInfo(&flash);
 
+
+  HAL_Delay(5000);
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -387,6 +477,14 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
+    char key = Keypad_ReadDebounced();
+    static char lastDisplayed = '\0';
+    if (key != lastDisplayed)
+    {
+      TFT_ShowKeypad(key);
+      lastDisplayed = key;
+    }
+    HAL_Delay(5);
   }
   /* USER CODE END 3 */
 }
@@ -483,9 +581,11 @@ static void MX_GPIO_Init(void)
   /* USER CODE END MX_GPIO_Init_1 */
 
   /* GPIO Ports Clock Enable */
+  __HAL_RCC_GPIOC_CLK_ENABLE();
   __HAL_RCC_GPIOA_CLK_ENABLE();
   __HAL_RCC_GPIOB_CLK_ENABLE();
   __HAL_RCC_GPIOE_CLK_ENABLE();
+  __HAL_RCC_GPIOD_CLK_ENABLE();
 
   /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(FLASH_CS_GPIO_Port, FLASH_CS_Pin, GPIO_PIN_SET);
@@ -517,13 +617,37 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(TFT_CS_GPIO_Port, &GPIO_InitStruct);
 
+  /*Configure GPIO pin : keypad_Pin */
+  GPIO_InitStruct.Pin = keypad_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
+  GPIO_InitStruct.Pull = GPIO_PULLUP;
+  HAL_GPIO_Init(keypad_GPIO_Port, &GPIO_InitStruct);
+
+  /*Configure GPIO pins : keypadD9_Pin keypadD11_Pin keypadD13_Pin keypadD15_Pin */
+  GPIO_InitStruct.Pin = keypadD9_Pin|keypadD11_Pin|keypadD13_Pin|keypadD15_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
+  GPIO_InitStruct.Pull = GPIO_PULLUP;
+  HAL_GPIO_Init(GPIOD, &GPIO_InitStruct);
+
+  /*Configure GPIO pins : keypadC7_Pin keypadC9_Pin */
+  GPIO_InitStruct.Pin = keypadC7_Pin|keypadC9_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
+  GPIO_InitStruct.Pull = GPIO_PULLUP;
+  HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
+
+  /*Configure GPIO pin : keypadA9_Pin */
+  GPIO_InitStruct.Pin = keypadA9_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
+  GPIO_InitStruct.Pull = GPIO_PULLUP;
+  HAL_GPIO_Init(keypadA9_GPIO_Port, &GPIO_InitStruct);
+
   /* USER CODE BEGIN MX_GPIO_Init_2 */
 
   /* USER CODE END MX_GPIO_Init_2 */
 }
 
 /* USER CODE BEGIN 4 */
-void TFT_SetAddressWindow(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1)
+static void TFT_SetAddressWindow(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1)
 {
     TFT_Command(0x2A);
     TFT_Data(x0 >> 8);
@@ -538,7 +662,7 @@ void TFT_SetAddressWindow(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1)
     TFT_Data(y1 & 0xFF);
 }
 
-void TFT_FillColor(uint16_t color)
+static void TFT_FillColor(uint16_t color)
 {
     TFT_SetAddressWindow(0, 0, 127, 159);
     TFT_Command(0x2C);
@@ -559,27 +683,14 @@ void TFT_FillColor(uint16_t color)
     UNSEL_TFT();
 }
 
-void TFT_DrawPixel(uint16_t x, uint16_t y, uint16_t color)
-{
-    if (x >= 128 || y >= 160) return;
 
-    TFT_SetAddressWindow(x, y, x, y);
-    TFT_Command(0x2C);
-
-    uint8_t pixel[2] = {
-        (uint8_t)(color >> 8),
-        (uint8_t)(color & 0xFF)
-    };
-
-    SEL_TFT();
-    HAL_GPIO_WritePin(TFT_DC_GPIO_Port, TFT_DC_Pin, GPIO_PIN_SET);
-    HAL_SPI_Transmit(&hspi1, pixel, 2, 1000);
-    UNSEL_TFT();
-}
-
-void TFT_DrawChar(uint16_t x, uint16_t y, char c,
+static void TFT_DrawChar(uint16_t x, uint16_t y, char c,
                   uint16_t color, uint16_t bg)
 {
+    if (x + 5 >= 128 || y + 7 >= 160)
+        return;
+
+    // Find character in font table
     const uint8_t *glyph = font[0];
 
     for (unsigned int i = 0; i < sizeof(chars) - 1; i++)
@@ -591,24 +702,51 @@ void TFT_DrawChar(uint16_t x, uint16_t y, char c,
         }
     }
 
-    for (int col = 0; col < 6; col++)
+    // 6x8 pixels, RGB565 = 2 bytes per pixel
+    uint8_t buffer[6 * 8 * 2];
+
+    uint16_t index = 0;
+
+    for (uint8_t row = 0; row < 8; row++)
     {
-        for (int row = 0; row < 8; row++)
+        for (uint8_t col = 0; col < 6; col++)
         {
             uint16_t pixelColor = bg;
 
             if (col < 5 && row < 7)
             {
                 if (glyph[col] & (1 << row))
+                {
                     pixelColor = color;
+                }
             }
 
-            TFT_DrawPixel(x + col, y + row, pixelColor);
+            buffer[index++] = (uint8_t)(pixelColor >> 8);
+            buffer[index++] = (uint8_t)(pixelColor & 0xFF);
         }
     }
+
+    // Set address window once for entire character
+    TFT_SetAddressWindow(x, y, x + 5, y + 7);
+
+    // Start memory write
+    TFT_Command(0x2C);
+
+    // Send all 48 pixels in one SPI transaction
+    SEL_TFT();
+
+    HAL_GPIO_WritePin(
+        TFT_DC_GPIO_Port,
+        TFT_DC_Pin,
+        GPIO_PIN_SET
+    );
+
+    HAL_SPI_Transmit(&hspi1, buffer, sizeof(buffer), 1000);
+
+    UNSEL_TFT();
 }
 
-void TFT_DrawString(uint16_t x, uint16_t y, const char *str,
+static void TFT_DrawString(uint16_t x, uint16_t y, const char *str,
                     uint16_t color, uint16_t bg)
 {
     while (*str && x <= 122)
@@ -619,7 +757,7 @@ void TFT_DrawString(uint16_t x, uint16_t y, const char *str,
     }
 }
 
-void TFT_ShowFlashInfo(const FlashInfo *info)
+static void TFT_ShowFlashInfo(const FlashInfo *info)
 {
     if (info == NULL)
         return;
@@ -710,6 +848,48 @@ void TFT_ShowFlashInfo(const FlashInfo *info)
 
     TFT_DrawString(4, 124, buf, TFT_WHITE, TFT_BLACK);
 }
+
+static void TFT_ShowKeypad(char key)
+{
+    char line[20] = "KEY: NONE";
+    if (key != '\0') {
+        line[0] = 'K'; line[1] = 'E'; line[2] = 'Y'; line[3] = ':';
+        line[4] = ' '; line[5] = key; line[6] = ' '; line[7] = ' ';
+        line[8] = ' '; line[9] = '\0';
+    }
+    // Draw fixed-width text with background to erase the previous key.
+    TFT_DrawString(4, 4, "KEYPAD TEST", TFT_CYAN, TFT_BLACK);
+    TFT_DrawString(4, 40, "KEY: NONE   ", TFT_WHITE, TFT_BLACK);
+    TFT_DrawString(4, 40, line, TFT_GREEN, TFT_BLACK);
+}
+
+static void Flash_RunDemo(void)
+{
+  FlashInfo flash = {0};
+
+  // read ID
+  SEL_FLASH();
+  uint8_t command = 0x9F;
+  HAL_StatusTypeDef commute_status = HAL_SPI_Transmit(&hspi1, &command, 1, 1000);
+  if (commute_status == HAL_OK)
+	  commute_status = HAL_SPI_Receive(&hspi1, flash.id, 3, 1000);
+  UNSEL_FLASH();
+  if (commute_status == HAL_OK) flash.has_id = 1;
+
+  readFlashStatus(&flash);
+
+
+  // read memory
+  readMemory(&flash, 0x123400);
+  TFT_ShowFlashInfo(&flash);
+  HAL_Delay(15000);
+
+  // write and read
+  writeMemory(&flash, 0x123400, 0xAB);
+  readMemory(&flash, 0x123400);
+  TFT_ShowFlashInfo(&flash);
+}
+
 /* USER CODE END 4 */
 
 /**
